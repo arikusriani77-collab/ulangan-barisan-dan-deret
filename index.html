@@ -204,6 +204,7 @@ function shuf(a,r){a=[...a];for(let i=a.length-1;i>0;i--){const j=Math.floor(r()
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const KEY="ujian_state_v1";
 let st=null, qs=[], timerId=null, lastV=0, done=false, grace=0;
+const mv=()=>(st&&st.mv)||MAXV;
 const tanya=m=>{const r=confirm(m);grace=Date.now()+2500;return r}; // dialog bawaan browser membuat layar 'blur' sesaat, bukan pelanggaran
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(st))}catch(e){}};
 
@@ -216,12 +217,18 @@ function inFs(){return !!(document.fullscreenElement||document.webkitFullscreenE
 function violation(why){
   if(!st||done||Date.now()<grace||Date.now()-lastV<1500)return; lastV=Date.now();
   st.v++; st.log.push(new Date().toLocaleTimeString("id-ID")+" "+why); save();
-  if(st.v>=CONFIG.MAKS_PELANGGARAN){submit("Otomatis (pelanggaran)");return}
-  $("#ovm").innerHTML=`${why}.<br>Pelanggaran <b>${st.v} dari ${CONFIG.MAKS_PELANGGARAN}</b>. Jika mencapai batas, jawaban dikirim otomatis dan ujian berakhir.`;
+  if(st.v>=mv()){submit("Otomatis (pelanggaran)");return}
+  $("#ovm").innerHTML=`${why}.<br>Pelanggaran <b>${st.v} dari ${mv()}</b>. Jika mencapai batas, jawaban dikirim otomatis dan ujian berakhir.`;
   $("#ov").style.display="flex"; renderBar();
 }
 $("#ovb").onclick=()=>{$("#ov").style.display="none";grace=Date.now()+2500;fs()};
-document.addEventListener("visibilitychange",()=>{if(document.hidden)violation("Keluar dari halaman / pindah tab / aplikasi")});
+let wl=null,hiddenAt=0,hidIdx=-1;
+async function jagaLayar(){ // cegah layar mati otomatis (siswa menghitung di kertas)
+  try{if(st&&!done&&"wakeLock" in navigator&&!document.hidden&&!wl){wl=await navigator.wakeLock.request("screen");wl.addEventListener("release",()=>{wl=null})}}catch(e){wl=null}}
+function lepasLayar(){try{if(wl)wl.release()}catch(e){}wl=null}
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden){hiddenAt=Date.now();hidIdx=-1;const n=st?st.log.length:0;violation("Keluar dari halaman / pindah tab / aplikasi, atau layar mati");if(st&&st.log.length>n)hidIdx=st.log.length-1}
+  else{if(st&&!done&&hidIdx>=0&&st.log[hidIdx]){const d=Math.round((Date.now()-hiddenAt)/1000);st.log[hidIdx]+=` (selama ${d>=60?Math.floor(d/60)+" mnt "+d%60+" dtk":d+" dtk"})`;save();hidIdx=-1}jagaLayar()}});
 window.addEventListener("blur",()=>{if(!document.hidden)setTimeout(()=>{if(!document.hasFocus())violation("Layar kehilangan fokus")},300)});
 ["fullscreenchange","webkitfullscreenchange"].forEach(ev=>document.addEventListener(ev,()=>{if(!inFs())violation("Keluar dari mode layar penuh")}));
 
@@ -256,7 +263,8 @@ function depan(msg){
     <div class="info"><span>📝 15 soal</span><span id="chd">⏱ ${DUR} menit</span><span>🔁 ${CONFIG.KESEMPATAN} kesempatan · nilai terbesar diambil</span></div>
     <ul class="rules"><li>Ujian berjalan dalam <b>layar penuh</b>.</li>
     <li>Dilarang pindah tab/aplikasi, membuka aplikasi lain, atau menyalin soal.</li>
-    <li>Setiap pelanggaran dicatat dan dilihat guru. Batas <b>${CONFIG.MAKS_PELANGGARAN} kali</b>, setelah itu jawaban otomatis dikirim.</li></ul>
+    <li>Setiap pelanggaran dicatat dan dilihat guru. Batas <b><span id="mvt">${MAXV}</span> kali</b>, setelah itu jawaban otomatis dikirim.</li>
+    <li>Layar HP dijaga <b>tetap menyala</b> selama ujian. Jangan menekan tombol power. Saat menghitung di kertas, biarkan HP terbuka di halaman soal.</li></ul>
     <div class="err" style="color:#ffd0d0">${msg||""}</div>
     <div class="lock" id="stat"></div>
     <button class="btn-mulai" id="mulai0" disabled>Memeriksa…</button></div></div></div>`;
@@ -265,13 +273,14 @@ function depan(msg){
   $("#mulai0").onclick=()=>{clearInterval(pollId);if($("#mulai0").dataset.lanjut)lanjut();else login(msg)};
   clearInterval(pollId);cekStatus();pollId=setInterval(cekStatus,10000);
 }
-let DUR=CONFIG.DURASI_MENIT,pollId=null;
+let DUR=CONFIG.DURASI_MENIT,MAXV=CONFIG.MAKS_PELANGGARAN,pollId=null;
 function tersisa(){try{const o=JSON.parse(localStorage.getItem(KEY));return o&&!o.done?o:null}catch(e){return null}}
 function lanjut(){const o=tersisa();if(!o)return;st=o;st.v++;st.log.push("Memuat ulang halaman");save();grace=Date.now()+4000;fs();mulai()}
 async function cekStatus(){ // izin guru + jadwal dibaca dari sheet "Pengaturan"; dicek ulang tiap 10 detik
   const b=$("#mulai0"),s=$("#stat");if(!b||!s)return;
   try{const J=await(await fetch(CONFIG.SCRIPT_URL+"?aksi=status&t="+Date.now())).json();
     if(J.durasi>0){DUR=J.durasi;const c=$("#chd");if(c)c.textContent=`⏱ ${DUR} menit`}
+    if(J.batas>0){MAXV=J.batas;const m=$("#mvt");if(m)m.textContent=MAXV}
     if(J.buka){s.style.display="none";b.disabled=false;b.dataset.lanjut="";b.textContent=tersisa()?"Lanjutkan Ujian ▶":"Mulai ▶";if(tersisa())b.dataset.lanjut="1"}
     else if(tersisa()){s.style.display="block";s.textContent="🔒 "+(J.pesan||"Ujian ditutup.")+" Kamu masih punya ujian yang belum selesai.";b.disabled=false;b.dataset.lanjut="1";b.textContent="Lanjutkan Ujian ▶"}
     else{s.style.display="block";s.textContent="🔒 "+(J.pesan||"Ujian belum dibuka.");b.disabled=true;b.dataset.lanjut="";b.textContent="Menunggu izin guru…"}
@@ -280,7 +289,7 @@ async function cekStatus(){ // izin guru + jadwal dibaca dari sheet "Pengaturan"
 async function login(msg){
   app.innerHTML=`<div class="wrap"><div class="card"><h1>${CONFIG.JUDUL}</h1><p class="mu">Memuat daftar siswa…</p></div></div>`;
   clearInterval(pollId);let D,MK=3,bk="";
-  try{const r=await fetch(CONFIG.SCRIPT_URL+"?aksi=daftar");const J=await r.json();if(J.buka===false){bk=J.pesan||"Ujian belum dibuka."}else{D=J.kelas;MK=J.maks||3;if(J.durasi>0)DUR=J.durasi;if(!D||!Object.keys(D).length)throw 0}}
+  try{const r=await fetch(CONFIG.SCRIPT_URL+"?aksi=daftar");const J=await r.json();if(J.buka===false){bk=J.pesan||"Ujian belum dibuka."}else{D=J.kelas;MK=J.maks||3;if(J.durasi>0)DUR=J.durasi;if(J.batas>0)MAXV=J.batas;if(!D||!Object.keys(D).length)throw 0}}
   catch(e){app.innerHTML=`<div class="wrap"><div class="card"><h1>Daftar siswa gagal dimuat</h1><p class="mu">Periksa koneksi internet. Jika terus gagal, hubungi guru (sheet "Siswa" mungkin masih kosong).</p><button id="rt">Coba Lagi</button></div></div>`;$("#rt").onclick=()=>login(msg);return}
   if(bk){depan(bk);return}
   const kls=Object.keys(D);
@@ -301,14 +310,14 @@ async function login(msg){
     try{old=JSON.parse(localStorage.getItem(KEY))}catch(e){}
     if(old&&old.id==id&&!old.done){st=old;st.v++;st.log.push("Memuat ulang halaman")}
     else{if(old&&!old.done&&old.id!=id)return $("#er").textContent="Ada ujian lain yang belum selesai di perangkat ini.";
-      st={id,nm,kl,ab,att:c0+1,mk:MK,dur:DUR,cur:0,seed:Math.floor(Math.random()*1e9),start:Date.now(),ans:{},v:0,log:[],done:false}}
+      st={id,nm,kl,ab,att:c0+1,mk:MK,dur:DUR,mv:MAXV,cur:0,seed:Math.floor(Math.random()*1e9),start:Date.now(),ans:{},v:0,log:[],done:false}}
     save();grace=Date.now()+4000;fs();mulai();
   };
 }
 function mulai(){
   const r=rng(st.seed+7);
   qs=shuf(buatSoal(st.seed),r).map(q=>q.o&&!q.fix?{...q,o:shuf(q.o,r)}:q);
-  app.innerHTML=`<div class="bar"><span id="b1"></span><span id="b2"></span></div><div class="wrap"><div class="chips" id="chips"></div><div id="soal"></div><div class="navb"><button class="sec" id="prev">‹ Sebelumnya</button><button id="next">Selanjutnya ›</button></div></div>`;
+  app.innerHTML=`<div class="bar"><span id="b1"></span><span id="b2"></span></div><div class="wrap">${"wakeLock" in navigator?"":`<div class="note" id="wlnote">Penjaga layar tidak didukung di HP ini. Atur <b>Waktu layar (Screen timeout)</b> ke paling lama, dan sentuh layar sesekali saat menghitung.</div>`}<div class="chips" id="chips"></div><div id="soal"></div><div class="navb"><button class="sec" id="prev">‹ Sebelumnya</button><button id="next">Selanjutnya ›</button></div></div>`;
   $("#soal").innerHTML=qs.map((q,i)=>`<div class="card q" style="display:none"><b>Soal ${i+1} dari ${qs.length}</b><span class="tag">${q.tag}</span><p>${q.q}</p>${isi(q)}</div>`).join("");
   $("#chips").innerHTML=qs.map((q,i)=>`<button class="chip" data-c="${i}">${i+1}</button>`).join("");
   document.querySelectorAll("[data-q]").forEach(el=>el.addEventListener("input",()=>{ambil();chips()}));
@@ -317,7 +326,7 @@ function mulai(){
   $("#next").onclick=()=>{if(st.cur<qs.length-1)tampil(st.cur+1);else{
     const k=qs.filter(q=>!jawab(q)).length;
     if(tanya(k?`Masih ada ${k} soal belum dijawab. Tetap kirim sekarang?`:"Semua soal sudah dijawab. Kirim jawaban sekarang?"))submit("Selesai")}};
-  pulih();tampil(Math.min(st.cur||0,qs.length-1));renderBar();
+  pulih();tampil(Math.min(st.cur||0,qs.length-1));renderBar();jagaLayar();
   timerId=setInterval(renderBar,1000);
 }
 function jawab(q){const a=st.ans[q.id];if(a===undefined)return false;if(q.type=="pk")return a.length>0;if(q.type=="bs")return Object.keys(a).length>0;return true}
@@ -356,7 +365,7 @@ function sisa(){return Math.max(0,(st.dur||CONFIG.DURASI_MENIT)*60-Math.floor((D
 function renderBar(){
   if(!$("#b1"))return;const s=sisa();
   $("#b1").textContent=`${st.nm} · Percobaan ${st.att||1}`;
-  $("#b2").textContent=`⏱ ${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")} · ⚠ ${st.v}/${CONFIG.MAKS_PELANGGARAN}`;
+  $("#b2").textContent=`⏱ ${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")} · ⚠ ${st.v}/${mv()}${wl?" · 🔆":""}`;
   if(s<=0&&!done)submit("Otomatis (waktu habis)");
 }
 
@@ -374,7 +383,7 @@ function nilai(){
 }
 async function cek(){try{const J=await(await fetch(CONFIG.SCRIPT_URL+"?aksi=daftar&t="+Date.now())).json();const x=J.kelas[st.kl][st.ab-1];return !!x&&x.c>=st.att}catch(e){return false}}
 async function submit(status){
-  if(done)return;done=true;clearInterval(timerId);ambil&&qs.length&&ambil();
+  if(done)return;done=true;clearInterval(timerId);lepasLayar();ambil&&qs.length&&ambil();
   $("#ov").style.display="none";
   try{if(inFs())(document.exitFullscreen||document.webkitExitFullscreen).call(document)}catch(e){}
   const h=nilai(),total=qs.length;
